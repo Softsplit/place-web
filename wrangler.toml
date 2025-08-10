@@ -13,3 +13,6 @@ preview_id = "2e497d287d7f42328735125355360b73"
 
 [vars]
 ENVIRONMENT = "production"
+
+[observability.logs]
+enabled = true
