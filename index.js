@@ -13,6 +13,19 @@ async function handleSession(websocket, env) {
 
   websocket.addEventListener('message', async ({ data }) => {
     try {
+      // Check message size before parsing
+      if (data.length > 1000000) { // 1MB limit
+        console.warn('Received oversized message:', data.length, 'bytes')
+        websocket.send(
+          JSON.stringify({
+            Type: 'error',
+            message: 'Message too large',
+            tz: new Date(),
+          }),
+        )
+        return
+      }
+
       const message = JSON.parse(data)
 
       switch (message.Type) {
@@ -73,13 +86,42 @@ async function handleRequestCanvasData(websocket, message, env) {
       `Sending canvas data for map ${mapId}: ${canvasData.length} pixels`,
     )
 
-    websocket.send(
-      JSON.stringify({
-        Type: 'canvas_data',
-        MapId: mapId,
-        PixelData: canvasData,
-      }),
-    )
+    // Check message size and chunk if necessary
+    const CHUNK_SIZE = 1000 // pixels per chunk
+    
+    if (canvasData.length > CHUNK_SIZE) {
+      // Send chunked data
+      const totalChunks = Math.ceil(canvasData.length / CHUNK_SIZE)
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * CHUNK_SIZE
+        const end = Math.min(start + CHUNK_SIZE, canvasData.length)
+        const chunk = canvasData.slice(start, end)
+        
+        websocket.send(
+          JSON.stringify({
+            Type: 'canvas_data_chunk',
+            MapId: mapId,
+            PixelData: chunk,
+            ChunkIndex: i,
+            TotalChunks: totalChunks,
+            IsLastChunk: i === totalChunks - 1
+          }),
+        )
+        
+        // Small delay between chunks to prevent overwhelming
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+    } else {
+      // Send all at once if small enough
+      websocket.send(
+        JSON.stringify({
+          Type: 'canvas_data',
+          MapId: mapId,
+          PixelData: canvasData,
+        }),
+      )
+    }
   } catch (error) {
     console.error('Error loading canvas data:', error)
     websocket.send(
@@ -138,7 +180,7 @@ async function handlePixelUpdate(websocket, message, env) {
     await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(canvasData))
 
     console.log(
-      `Updated pixel for map ${mapId} at (${pixelData.Position.x}, ${pixelData.Position.y})`,
+      `Updated pixel for map ${mapId} at (${pixelData.Position.x}, ${pixelData.Position.y}), Color: (${pixelData.Color?.r ?? 'undefined'}, ${pixelData.Color?.g ?? 'undefined'}, ${pixelData.Color?.b ?? 'undefined'}), Active: ${pixelData.IsActive}`,
     )
 
     // Acknowledge the update
