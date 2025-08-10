@@ -82,12 +82,7 @@ async function handleRequestCanvasData(websocket, message, env) {
     const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapId}`)
     const canvasData = canvasDataJson ? JSON.parse(canvasDataJson) : []
 
-    console.log(
-      `Sending canvas data for map ${mapId}: ${canvasData.length} pixels`,
-    )
-
-    // Check message size and chunk if necessary
-    const CHUNK_SIZE = 1000 // pixels per chunk
+    const CHUNK_SIZE = 100 // pixels per chunk
     
     if (canvasData.length > CHUNK_SIZE) {
       // Send chunked data
@@ -95,8 +90,7 @@ async function handleRequestCanvasData(websocket, message, env) {
       
       for (let i = 0; i < totalChunks; i++) {
         const start = i * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, canvasData.length)
-        const chunk = canvasData.slice(start, end)
+        const chunk = canvasData.slice(start, start + CHUNK_SIZE)
         
         websocket.send(
           JSON.stringify({
@@ -110,7 +104,7 @@ async function handleRequestCanvasData(websocket, message, env) {
         )
         
         // Small delay between chunks to prevent overwhelming
-        await new Promise(resolve => setTimeout(resolve, 10))
+        await new Promise(resolve => setTimeout(resolve, 5))
       }
     } else {
       // Send all at once if small enough
@@ -178,10 +172,6 @@ async function handlePixelUpdate(websocket, message, env) {
 
     // Save updated data back to KV storage
     await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(canvasData))
-
-    console.log(
-      `Updated pixel for map ${mapId} at (${pixelData.Position.x}, ${pixelData.Position.y}), Color: (${pixelData.Color?.r ?? 'undefined'}, ${pixelData.Color?.g ?? 'undefined'}, ${pixelData.Color?.b ?? 'undefined'}), Active: ${pixelData.IsActive}`,
-    )
 
     // Acknowledge the update
     websocket.send(
