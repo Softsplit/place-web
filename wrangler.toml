@@ -1,6 +1,15 @@
 name = "place-web"
-type = "webpack"
-account_id = "b54f07a6c269ecca2fa60f1ae4920c99"
-workers_dev = true
-route = ""
-zone_id = ""
+main = "index.js"
+compatibility_date = "2023-10-30"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+port = 80
+
+[[kv_namespaces]]
+binding = "CANVAS_STORAGE"
+id = "68dc767e60e946a78246567fa025dce2"
+preview_id = "2e497d287d7f42328735125355360b73"
+
+[vars]
+ENVIRONMENT = "production"

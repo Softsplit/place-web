@@ -1,16 +1,33 @@
 {
   "private": true,
   "name": "place-web",
-  "version": "1.0.0",
-  "description": "A template for kick starting a Cloudflare Workers project",
+  "version": "2.0.0",
+  "description": "Cloudflare Worker for persistent canvas storage in sbox.place",
   "main": "index.js",
   "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler publish",
+    "tail": "wrangler tail",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "format": "prettier --write '**/*.{js,css,json,md}'"
+    "format": "prettier --write '**/*.{js,css,json,md}'",
+    "setup": "npm run create-kv && npm run deploy",
+    "create-kv": "wrangler kv namespace create CANVAS_STORAGE && wrangler kv namespace create CANVAS_STORAGE --preview"
   },
-  "author": "Kristian Freeman <kristian@kristianfreeman.com>",
+  "keywords": [
+    "cloudflare",
+    "workers", 
+    "websocket",
+    "sbox",
+    "canvas",
+    "persistence"
+  ],
+  "author": "Softsplit Studios",
   "license": "MIT",
   "devDependencies": {
-    "prettier": "^1.18.2"
+    "prettier": "^3.0.0",
+    "wrangler": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
