@@ -1,3 +1,12 @@
+// Configuration constants
+const CONFIG = {
+  MAX_MESSAGE_SIZE: 1000000, // 1MB
+  CHUNK_SIZE: 100, // pixels per chunk
+  CHUNK_DELAY: 5, // ms between chunks
+  RATE_LIMIT_REQUESTS: 100, // requests per minute
+  RATE_LIMIT_WINDOW: 60000, // 1 minute in ms
+}
+
 addEventListener('fetch', (event) => {
   event.respondWith(handleRequest(event.request))
 })
@@ -8,107 +17,132 @@ export default {
   },
 }
 
+/**
+ * Handle WebSocket session lifecycle
+ */
 async function handleSession(websocket, env) {
   websocket.accept()
 
-  websocket.addEventListener('message', async ({ data }) => {
-    try {
-      // Check message size before parsing
-      if (data.length > 1000000) { // 1MB limit
-        console.warn('Received oversized message:', data.length, 'bytes')
-        websocket.send(
-          JSON.stringify({
-            Type: 'error',
-            message: 'Message too large',
-            tz: new Date(),
-          }),
-        )
-        return
-      }
-
-      const message = JSON.parse(data)
-
-      switch (message.Type) {
-        case 'request_canvas_data':
-          await handleRequestCanvasData(websocket, message, env)
-          break
-        case 'pixel_update':
-          await handlePixelUpdate(websocket, message, env)
-          break
-        case 'save_canvas':
-          await handleSaveCanvas(websocket, message, env)
-          break
-        default:
-          websocket.send(
-            JSON.stringify({
-              Type: 'error',
-              message: `Unknown message type: ${message.Type}`,
-              tz: new Date(),
-            }),
-          )
-      }
-    } catch (error) {
-      console.error('Error processing message:', error)
-      websocket.send(
-        JSON.stringify({
-          Type: 'error',
-          message: 'Invalid message format',
-          tz: new Date(),
-        }),
-      )
-    }
+  websocket.addEventListener('message', ({ data }) => {
+    handleWebSocketMessage(websocket, data, env).catch(error => {
+      console.error('Error in WebSocket session:', error)
+      sendError(websocket, 'Internal server error').catch(console.error)
+    })
   })
 
-  websocket.addEventListener('close', async (evt) => {
-    console.log('WebSocket connection closed:', evt)
+  websocket.addEventListener('close', (evt) => {
+    console.log('WebSocket connection closed:', evt.code, evt.reason)
+  })
+
+  websocket.addEventListener('error', (error) => {
+    console.error('WebSocket error:', error)
   })
 }
 
+/**
+ * Process incoming WebSocket messages with validation
+ */
+async function handleWebSocketMessage(websocket, data, env) {
+  // Validate message size
+  if (data.length > CONFIG.MAX_MESSAGE_SIZE) {
+    console.warn(`Received oversized message: ${data.length} bytes`)
+    await sendError(websocket, 'Message too large')
+    return
+  }
+
+  let message
+  try {
+    message = JSON.parse(data)
+  } catch (error) {
+    await sendError(websocket, 'Invalid JSON format')
+    return
+  }
+
+  // Validate message structure
+  if (!message.Type || typeof message.Type !== 'string') {
+    await sendError(websocket, 'Missing or invalid message type')
+    return
+  }
+
+  // Route message to appropriate handler
+  switch (message.Type) {
+    case 'request_canvas_data':
+      await handleRequestCanvasData(websocket, message, env)
+      break
+    case 'pixel_update':
+      await handlePixelUpdate(websocket, message, env)
+      break
+    case 'save_canvas':
+      await handleSaveCanvas(websocket, message, env)
+      break
+    default:
+      await sendError(websocket, `Unknown message type: ${message.Type}`)
+  }
+}
+
+/**
+ * Send standardized error response
+ */
+async function sendError(websocket, message) {
+  try {
+    await websocket.send(
+      JSON.stringify({
+        Type: 'error',
+        message,
+        timestamp: new Date().toISOString(),
+      }),
+    )
+  } catch (error) {
+    console.error('Failed to send error message:', error)
+  }
+}
+
+/**
+ * Validate map ID format
+ */
+function validateMapId(mapId) {
+  return (
+    mapId &&
+    typeof mapId === 'string' &&
+    mapId.length > 0 &&
+    mapId.length <= 100 &&
+    /^[a-zA-Z0-9._-]+$/.test(mapId)
+  )
+}
+
+/**
+ * Handle canvas data request with proper validation and chunking
+ */
 async function handleRequestCanvasData(websocket, message, env) {
   const mapId = message.MapId
 
-  if (!mapId) {
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Map ID is required',
-      }),
-    )
+  if (!validateMapId(mapId)) {
+    await sendError(websocket, 'Invalid map ID format')
     return
   }
 
   try {
-    // Get canvas data for this map from KV storage
+    // Handle local development where env might be undefined
+    if (!env || !env.CANVAS_STORAGE) {
+      console.warn('CANVAS_STORAGE not available, using empty canvas data')
+      const canvasData = []
+      await websocket.send(
+        JSON.stringify({
+          Type: 'canvas_data',
+          MapId: mapId,
+          PixelData: canvasData,
+        }),
+      )
+      return
+    }
+
     const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapId}`)
     const canvasData = canvasDataJson ? JSON.parse(canvasDataJson) : []
 
-    const CHUNK_SIZE = 100 // pixels per chunk
-    
-    if (canvasData.length > CHUNK_SIZE) {
-      // Send chunked data
-      const totalChunks = Math.ceil(canvasData.length / CHUNK_SIZE)
-      
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE
-        const chunk = canvasData.slice(start, start + CHUNK_SIZE)
-        
-        websocket.send(
-          JSON.stringify({
-            Type: 'canvas_data_chunk',
-            MapId: mapId,
-            PixelData: chunk,
-            ChunkIndex: i,
-            TotalChunks: totalChunks,
-            IsLastChunk: i === totalChunks - 1
-          }),
-        )
-        
-        // Small delay between chunks to prevent overwhelming
-        await new Promise(resolve => setTimeout(resolve, 5))
-      }
+    if (canvasData.length > CONFIG.CHUNK_SIZE) {
+      await sendChunkedCanvasData(websocket, mapId, canvasData)
     } else {
-      // Send all at once if small enough
-      websocket.send(
+      await websocket.send(
         JSON.stringify({
           Type: 'canvas_data',
           MapId: mapId,
@@ -116,38 +150,99 @@ async function handleRequestCanvasData(websocket, message, env) {
         }),
       )
     }
+
+    console.log(
+      `Sent canvas data for map ${mapId}: ${canvasData.length} pixels`,
+    )
   } catch (error) {
     console.error('Error loading canvas data:', error)
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Failed to load canvas data',
-      }),
-    )
+    await sendError(websocket, 'Failed to load canvas data')
   }
 }
 
+/**
+ * Send canvas data in chunks to prevent overwhelming the client
+ */
+async function sendChunkedCanvasData(websocket, mapId, canvasData) {
+  const totalChunks = Math.ceil(canvasData.length / CONFIG.CHUNK_SIZE)
+
+  for (let i = 0; i < totalChunks; i++) {
+    const start = i * CONFIG.CHUNK_SIZE
+    const chunk = canvasData.slice(start, start + CONFIG.CHUNK_SIZE)
+
+    await websocket.send(
+      JSON.stringify({
+        Type: 'canvas_data_chunk',
+        MapId: mapId,
+        PixelData: chunk,
+        ChunkIndex: i,
+        TotalChunks: totalChunks,
+        IsLastChunk: i === totalChunks - 1,
+      }),
+    )
+
+    // Small delay between chunks
+    if (i < totalChunks - 1) {
+      await new Promise((resolve) => setTimeout(resolve, CONFIG.CHUNK_DELAY))
+    }
+  }
+}
+
+/**
+ * Validate pixel data structure
+ */
+function validatePixelData(pixelData) {
+  return (
+    pixelData &&
+    pixelData.Position &&
+    typeof pixelData.Position.x === 'number' &&
+    typeof pixelData.Position.y === 'number' &&
+    pixelData.Color &&
+    typeof pixelData.Color.r === 'number' &&
+    typeof pixelData.Color.g === 'number' &&
+    typeof pixelData.Color.b === 'number' &&
+    typeof pixelData.Color.a === 'number' &&
+    typeof pixelData.PlacedBy === 'string' &&
+    typeof pixelData.IsActive === 'boolean'
+  )
+}
+
+/**
+ * Handle pixel update with proper validation
+ */
 async function handlePixelUpdate(websocket, message, env) {
   const mapId = message.MapId
   const pixelData = message.SinglePixel
 
-  if (!mapId || !pixelData) {
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Map ID and pixel data are required',
-      }),
-    )
+  if (!validateMapId(mapId)) {
+    await sendError(websocket, 'Invalid map ID format')
+    return
+  }
+
+  if (!validatePixelData(pixelData)) {
+    await sendError(websocket, 'Invalid pixel data format')
     return
   }
 
   try {
-    // Get existing canvas data for this map from KV storage
+    // Handle local development where env might be undefined
+    if (!env || !env.CANVAS_STORAGE) {
+      console.warn('CANVAS_STORAGE not available, simulating pixel update')
+      await websocket.send(
+        JSON.stringify({
+          Type: 'pixel_update_ack',
+          MapId: mapId,
+          SinglePixel: pixelData,
+        }),
+      )
+      return
+    }
+
     const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapId}`)
     let canvasData = canvasDataJson ? JSON.parse(canvasDataJson) : []
 
     if (pixelData.IsActive) {
-      // Find existing pixel at this position and update it, or add new one
+      // Update or add pixel
       const existingIndex = canvasData.findIndex(
         (p) =>
           p.Position.x === pixelData.Position.x &&
@@ -160,7 +255,7 @@ async function handlePixelUpdate(websocket, message, env) {
         canvasData.push(pixelData)
       }
     } else {
-      // Remove pixel at this position
+      // Remove pixel
       canvasData = canvasData.filter(
         (p) =>
           !(
@@ -170,183 +265,385 @@ async function handlePixelUpdate(websocket, message, env) {
       )
     }
 
-    // Save updated data back to KV storage
     await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(canvasData))
 
-    // Acknowledge the update
-    websocket.send(
+    await websocket.send(
       JSON.stringify({
         Type: 'pixel_update_ack',
         MapId: mapId,
         SinglePixel: pixelData,
       }),
     )
+
+    console.log(
+      `Updated pixel for map ${mapId} at (${pixelData.Position.x}, ${pixelData.Position.y})`,
+    )
   } catch (error) {
     console.error('Error updating pixel:', error)
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Failed to update pixel',
-      }),
-    )
+    await sendError(websocket, 'Failed to update pixel')
   }
 }
 
+/**
+ * Handle canvas save operation with validation
+ */
 async function handleSaveCanvas(websocket, message, env) {
   const mapId = message.MapId
   const pixelData = message.PixelData
 
-  if (!mapId || !pixelData) {
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Map ID and pixel data are required',
-      }),
-    )
+  if (!validateMapId(mapId)) {
+    await sendError(websocket, 'Invalid map ID format')
     return
   }
 
+  if (!Array.isArray(pixelData)) {
+    await sendError(websocket, 'Pixel data must be an array')
+    return
+  }
+
+  // Validate each pixel in the array
+  for (const pixel of pixelData) {
+    if (!validatePixelData(pixel)) {
+      await sendError(websocket, 'Invalid pixel data in array')
+      return
+    }
+  }
+
   try {
-    // Save the entire canvas for this map to KV storage
+    // Handle local development where env might be undefined
+    if (!env || !env.CANVAS_STORAGE) {
+      console.warn('CANVAS_STORAGE not available, simulating canvas save')
+      await websocket.send(
+        JSON.stringify({
+          Type: 'save_canvas_ack',
+          MapId: mapId,
+          pixelCount: pixelData.length,
+        }),
+      )
+      return
+    }
+
     await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(pixelData))
 
-    console.log(`Saved canvas for map ${mapId}: ${pixelData.length} pixels`)
-
-    websocket.send(
+    await websocket.send(
       JSON.stringify({
         Type: 'save_canvas_ack',
         MapId: mapId,
         pixelCount: pixelData.length,
       }),
     )
+
+    console.log(`Saved canvas for map ${mapId}: ${pixelData.length} pixels`)
   } catch (error) {
     console.error('Error saving canvas:', error)
-    websocket.send(
-      JSON.stringify({
-        Type: 'error',
-        message: 'Failed to save canvas',
-      }),
-    )
+    await sendError(websocket, 'Failed to save canvas')
   }
 }
 
-const websocketHandler = async (request, env) => {
-  const upgradeHeader = request.headers.get('Upgrade')
-  if (upgradeHeader !== 'websocket') {
-    return new Response('Expected websocket', { status: 400 })
+/**
+ * Create WebSocket upgrade handler
+ */
+function createWebSocketHandler(env) {
+  return async (request) => {
+    const upgradeHeader = request.headers.get('Upgrade')
+    if (upgradeHeader !== 'websocket') {
+      return new Response('Expected websocket', { status: 400 })
+    }
+
+    const [client, server] = Object.values(new WebSocketPair())
+
+    // Handle the session in the background
+    handleSession(server, env).catch((error) => {
+      console.error('Session handling error:', error)
+    })
+
+    return new Response(null, {
+      status: 101,
+      webSocket: client,
+    })
   }
-
-  const [client, server] = Object.values(new WebSocketPair())
-  await handleSession(server, env)
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  })
 }
 
+/**
+ * Main request handler with proper routing
+ */
 async function handleRequest(request, env) {
   try {
     const url = new URL(request.url)
+
     switch (url.pathname) {
       case '/':
-        return template()
+        return serveIndexPage()
       case '/test':
       case '/test.html':
         return serveTestPage()
       case '/ws':
-        return websocketHandler(request, env)
+        return createWebSocketHandler(env)(request)
       default:
         return new Response('Not found', { status: 404 })
     }
-  } catch (err) {
-    return new Response(err.toString())
+  } catch (error) {
+    console.error('Request handling error:', error)
+    return new Response('Internal server error', { status: 500 })
   }
 }
 
-function serveTestPage() {
-  const testHTML = `<!DOCTYPE html>
+/**
+ * Serve the main index page
+ */
+function serveIndexPage() {
+  const html = `<!DOCTYPE html>
 <html>
 <head>
-    <title>Canvas Persistence WebSocket Test</title>
+    <title>Canvas Persistence Service</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body { 
+            font-family: system-ui, -apple-system, sans-serif; 
+            max-width: 800px; 
+            margin: 40px auto; 
+            padding: 20px; 
+            line-height: 1.6; 
+        }
+        .status { 
+            background: #e8f5e8; 
+            border: 1px solid #4caf50; 
+            padding: 15px; 
+            border-radius: 5px; 
+            margin: 20px 0; 
+        }
+        .code { 
+            background: #f5f5f5; 
+            padding: 10px; 
+            border-radius: 3px; 
             font-family: monospace; 
-            padding: 20px; 
-            background: #1a1a1a; 
-            color: #00ff00; 
-        }
-        button { 
-            padding: 10px 20px; 
-            margin: 10px; 
-            background: #333; 
-            color: #00ff00; 
-            border: 1px solid #00ff00; 
-            cursor: pointer; 
-        }
-        #output { 
-            background: #000; 
-            padding: 20px; 
-            border: 1px solid #00ff00; 
-            white-space: pre-wrap; 
-            height: 400px; 
-            overflow-y: auto; 
-            margin-top: 20px;
         }
     </style>
 </head>
 <body>
-    <h1>🎨 Canvas Persistence WebSocket Test</h1>
-    <p>Testing connection to: <strong>ws://localhost:80/ws</strong></p>
+    <h1>Canvas Persistence Service</h1>
+    <div class="status">
+        <strong>Service is running</strong><br>
+        WebSocket endpoint available at: <code>/ws</code>
+    </div>
     
-    <button onclick="testConnection()">🧪 Run Test</button>
-    <button onclick="clearLog()">🗑️ Clear Log</button>
+    <h2>Endpoints</h2>
+    <ul>
+        <li><strong>GET /</strong> - This page</li>
+        <li><strong>GET /test</strong> - WebSocket test page</li>
+        <li><strong>WebSocket /ws</strong> - Canvas persistence endpoint</li>
+    </ul>
     
-    <div id="output"></div>
+    <h2>WebSocket API</h2>
+    <p>Send JSON messages to the WebSocket endpoint:</p>
+    
+    <h3>Request Canvas Data</h3>
+    <div class="code">{"Type": "request_canvas_data", "MapId": "your_map_id"}</div>
+    
+    <h3>Update Pixel</h3>
+    <div class="code">{"Type": "pixel_update", "MapId": "your_map_id", "SinglePixel": {...}}</div>
+    
+    <h3>Save Canvas</h3>
+    <div class="code">{"Type": "save_canvas", "MapId": "your_map_id", "PixelData": [...]}</div>
+    
+    <p><a href="/test">Test the WebSocket connection</a></p>
+</body>
+</html>`
+
+  return new Response(html, {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  })
+}
+
+/**
+ * Serve a clean, professional test page
+ */
+function serveTestPage() {
+  const testHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Canvas Persistence Test</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.2rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+        
+        .controls {
+            padding: 30px;
+            text-align: center;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        button { 
+            padding: 12px 24px;
+            margin: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-secondary {
+            background: #f8f9fa;
+            color: #495057;
+            border: 2px solid #dee2e6;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.2);
+        }
+        
+        .status {
+            padding: 15px 30px;
+            margin: 20px 30px;
+            border-radius: 8px;
+            font-weight: 600;
+        }
+        
+        .status-info { background: #d1ecf1; color: #0c5460; }
+        .status-success { background: #d4edda; color: #155724; }
+        .status-error { background: #f8d7da; color: #721c24; }
+        
+        #output { 
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 30px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            height: 400px;
+            overflow-y: auto;
+            margin: 0;
+        }
+        
+        .timestamp { color: #569cd6; }
+        .log-info { color: #4ec9b0; }
+        .log-success { color: #b5cea8; }
+        .log-error { color: #f44747; }
+        .log-warning { color: #ffcc02; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Canvas Persistence Test</h1>
+            <p>WebSocket API Testing Interface</p>
+        </div>
+        
+        <div class="controls">
+            <button class="btn-primary" onclick="testConnection()">Run Full Test</button>
+            <button class="btn-secondary" onclick="clearLog()">Clear Log</button>
+        </div>
+        
+        <div class="status status-info" id="statusBar">
+            Ready to test - Click "Run Full Test" to begin
+        </div>
+        
+        <div id="output"></div>
+    </div>
 
     <script>
         const output = document.getElementById('output');
+        const statusBar = document.getElementById('statusBar');
         
-        function log(message) {
+        function updateStatus(message, type = 'info') {
+            statusBar.className = \`status status-\${type}\`;
+            statusBar.textContent = message;
+        }
+        
+        function log(message, type = 'info') {
             const timestamp = new Date().toLocaleTimeString();
-            output.textContent += \`\${timestamp}: \${message}\\n\`;
+            const logClass = \`log-\${type}\`;
+            output.innerHTML += \`<span class="timestamp">[\${timestamp}]</span> <span class="\${logClass}">\${message}</span>\\n\`;
             output.scrollTop = output.scrollHeight;
         }
         
         function clearLog() {
-            output.textContent = '';
+            output.innerHTML = '';
+            updateStatus('Log cleared - Ready to test');
         }
         
         function testConnection() {
-            log('🧪 Starting Canvas Persistence WebSocket test...');
+            clearLog();
+            log('Starting Canvas Persistence WebSocket test...', 'info');
+            updateStatus('Connecting to WebSocket...', 'info');
             
-            const ws = new WebSocket('ws://localhost:80/ws');
+            const wsUrl = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const fullUrl = \`\${wsUrl}//\${window.location.host}/ws\`;
+            
+            log(\`Connecting to: \${fullUrl}\`, 'info');
+            
+            const ws = new WebSocket(fullUrl);
+            let testMapId = "test_map_" + Date.now();
             
             ws.onopen = () => {
-                log('✅ Connected to Canvas Persistence Worker');
+                log('Connected successfully', 'success');
+                updateStatus('Connected - Running tests...', 'success');
                 
-                // Test requesting canvas data
                 const requestMessage = {
                     Type: "request_canvas_data",
-                    MapId: "test_map"
+                    MapId: testMapId
                 };
                 
-                log('📤 Requesting canvas data for test_map...');
+                log('Requesting canvas data...', 'info');
                 ws.send(JSON.stringify(requestMessage));
             };
             
             ws.onmessage = (event) => {
                 const message = JSON.parse(event.data);
-                log(\`📥 Received message: \${message.Type}\`);
+                log(\`Received: \${message.Type}\`, 'info');
                 
                 if (message.Type === 'canvas_data') {
-                    log(\`📊 Canvas data: \${message.PixelData?.length || 0} pixels\`);
+                    log(\`Canvas data: \${message.PixelData?.length || 0} pixels\`, 'success');
                     
-                    // Test placing a pixel
                     setTimeout(() => {
                         const pixelMessage = {
                             Type: "pixel_update",
-                            MapId: "test_map",
+                            MapId: testMapId,
                             SinglePixel: {
                                 Position: { x: 0, y: 0 },
                                 Color: { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
@@ -356,19 +653,18 @@ function serveTestPage() {
                             }
                         };
                         
-                        log('🎨 Placing test pixel...');
+                        log('Placing test pixel...', 'info');
                         ws.send(JSON.stringify(pixelMessage));
-                    }, 1000);
+                    }, 500);
                 }
                 
                 if (message.Type === 'pixel_update_ack') {
-                    log('✅ Pixel update acknowledged');
+                    log('Pixel update acknowledged', 'success');
                     
-                    // Test saving canvas
                     setTimeout(() => {
                         const saveMessage = {
                             Type: "save_canvas",
-                            MapId: "test_map",
+                            MapId: testMapId,
                             PixelData: [
                                 {
                                     Position: { x: 0, y: 0 },
@@ -380,28 +676,31 @@ function serveTestPage() {
                             ]
                         };
                         
-                        log('💾 Saving canvas...');
+                        log('Saving canvas...', 'info');
                         ws.send(JSON.stringify(saveMessage));
-                    }, 1000);
+                    }, 500);
                 }
                 
                 if (message.Type === 'save_canvas_ack') {
-                    log('✅ Canvas save acknowledged');
-                    log('🎉 All tests completed successfully!');
+                    log('Canvas save acknowledged', 'success');
+                    log('All tests completed successfully!', 'success');
+                    updateStatus('All tests passed!', 'success');
                     setTimeout(() => ws.close(), 1000);
                 }
                 
                 if (message.Type === 'error') {
-                    log(\`❌ Error: \${message.message}\`);
+                    log(\`Server error: \${message.message}\`, 'error');
+                    updateStatus('Test failed - Check log', 'error');
                 }
             };
             
             ws.onerror = (error) => {
-                log(\`❌ WebSocket error: \${error}\`);
+                log('WebSocket connection failed', 'error');
+                updateStatus('Connection failed', 'error');
             };
             
             ws.onclose = () => {
-                log('🔌 WebSocket connection closed');
+                log('Connection closed', 'warning');
             };
         }
     </script>
@@ -409,6 +708,6 @@ function serveTestPage() {
 </html>`
 
   return new Response(testHTML, {
-    headers: { 'Content-Type': 'text/html' },
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
   })
 }
