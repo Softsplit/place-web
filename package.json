@@ -1,31 +1,12 @@
 {
-  "private": true,
   "name": "place-web",
-  "version": "2.0.0",
-  "type": "module",
-  "description": "Cloudflare Worker for persistent canvas storage in sbox.place",
-  "main": "index.js",
+  "version": "1.0.0",
   "scripts": {
     "dev": "wrangler dev --port 80",
     "deploy": "wrangler publish",
-    "tail": "wrangler tail",
-    "test": "node test.js",
-    "format": "prettier --write '**/*.{js,css,json,md}'",
-    "lint": "prettier --check '**/*.{js,css,json,md}'",
     "setup": "npm run create-kv && npm run deploy",
-    "create-kv": "wrangler kv namespace create CANVAS_STORAGE && wrangler kv namespace create CANVAS_STORAGE --preview",
-    "clean": "rm -rf node_modules && npm install"
+    "create-kv": "wrangler kv namespace create CANVAS_STORAGE && wrangler kv namespace create CANVAS_STORAGE --preview"
   },
-  "keywords": [
-    "cloudflare",
-    "workers", 
-    "websocket",
-    "sbox",
-    "canvas",
-    "persistence"
-  ],
-  "author": "Softsplit Studios",
-  "license": "MIT",
   "devDependencies": {
     "prettier": "^3.0.0",
     "wrangler": "^3.0.0"
