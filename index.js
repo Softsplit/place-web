@@ -314,8 +314,7 @@ async function handleSaveCanvas(websocket, message, env) {
       await websocket.send(
         JSON.stringify({
           Type: 'save_canvas_ack',
-          MapIdent: mapIdent,
-          PixelCount: pixels.length,
+          MapIdent: mapIdent
         }),
       )
       return
@@ -326,8 +325,7 @@ async function handleSaveCanvas(websocket, message, env) {
     await websocket.send(
       JSON.stringify({
         Type: 'save_canvas_ack',
-        MapIdent: mapIdent,
-        PixelCount: pixels.length,
+        MapIdent: mapIdent
       }),
     )
 
