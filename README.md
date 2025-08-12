@@ -72,7 +72,7 @@ Visit your deployed worker URL at `/test` for the testing interface.
       "Position": { "x": 0, "y": 0 },
       "Color": { "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0 },
       "PlacedBy": "player_name",
-      "PlacedAt": "2025-08-10T12:00:00Z",
+      "LastModified": "2025-08-10T12:00:00Z",
       "IsActive": true
     }
   ]
@@ -88,7 +88,7 @@ Visit your deployed worker URL at `/test` for the testing interface.
     "Position": { "x": 0, "y": 0 },
     "Color": { "r": 1.0, "g": 0.0, "b": 0.0, "a": 1.0 },
     "PlacedBy": "player_name",
-    "PlacedAt": "2025-08-10T12:00:00Z",
+    "LastModified": "2025-08-10T12:00:00Z",
     "IsActive": true
   }
 }

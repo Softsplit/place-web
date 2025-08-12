@@ -88,8 +88,7 @@ async function sendError(websocket, message) {
     await websocket.send(
       JSON.stringify({
         Type: 'error',
-        message,
-        timestamp: new Date().toISOString(),
+        Message: message
       }),
     )
   } catch (error) {
@@ -100,13 +99,13 @@ async function sendError(websocket, message) {
 /**
  * Validate map ID format
  */
-function validateMapId(mapId) {
+function validateMapId(mapIdent) {
   return (
-    mapId &&
-    typeof mapId === 'string' &&
-    mapId.length > 0 &&
-    mapId.length <= 100 &&
-    /^[a-zA-Z0-9._-]+$/.test(mapId)
+    mapIdent &&
+    typeof mapIdent === 'string' &&
+    mapIdent.length > 0 &&
+    mapIdent.length <= 100 &&
+    /^[a-zA-Z0-9._-]+$/.test(mapIdent)
   )
 }
 
@@ -114,9 +113,9 @@ function validateMapId(mapId) {
  * Handle canvas data request with proper validation and chunking
  */
 async function handleRequestCanvasData(websocket, message, env) {
-  const mapId = message.MapId
+  const mapIdent = message.MapIdent
 
-  if (!validateMapId(mapId)) {
+  if (!validateMapId(mapIdent)) {
     await sendError(websocket, 'Invalid map ID format')
     return
   }
@@ -129,30 +128,30 @@ async function handleRequestCanvasData(websocket, message, env) {
       await websocket.send(
         JSON.stringify({
           Type: 'canvas_data',
-          MapId: mapId,
+          MapIdent: mapIdent,
           PixelData: canvasData,
         }),
       )
       return
     }
 
-    const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapId}`)
+    const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapIdent}`)
     const canvasData = canvasDataJson ? JSON.parse(canvasDataJson) : []
 
     if (canvasData.length > CONFIG.CHUNK_SIZE) {
-      await sendChunkedCanvasData(websocket, mapId, canvasData)
+      await sendChunkedCanvasData(websocket, mapIdent, canvasData)
     } else {
       await websocket.send(
         JSON.stringify({
           Type: 'canvas_data',
-          MapId: mapId,
+          MapIdent: mapIdent,
           PixelData: canvasData,
         }),
       )
     }
 
     console.log(
-      `Sent canvas data for map ${mapId}: ${canvasData.length} pixels`,
+      `Sent canvas data for map ${mapIdent}: ${canvasData.length} pixels`,
     )
   } catch (error) {
     console.error('Error loading canvas data:', error)
@@ -163,7 +162,7 @@ async function handleRequestCanvasData(websocket, message, env) {
 /**
  * Send canvas data in chunks to prevent overwhelming the client
  */
-async function sendChunkedCanvasData(websocket, mapId, canvasData) {
+async function sendChunkedCanvasData(websocket, mapIdent, canvasData) {
   const totalChunks = Math.ceil(canvasData.length / CONFIG.CHUNK_SIZE)
 
   for (let i = 0; i < totalChunks; i++) {
@@ -173,7 +172,7 @@ async function sendChunkedCanvasData(websocket, mapId, canvasData) {
     await websocket.send(
       JSON.stringify({
         Type: 'canvas_data_chunk',
-        MapId: mapId,
+        MapIdent: mapIdent,
         PixelData: chunk,
         ChunkIndex: i,
         TotalChunks: totalChunks,
@@ -211,10 +210,10 @@ function validatePixelData(pixelData) {
  * Handle pixel update with proper validation
  */
 async function handlePixelUpdate(websocket, message, env) {
-  const mapId = message.MapId
+  const mapIdent = message.MapIdent
   const pixelData = message.SinglePixel
 
-  if (!validateMapId(mapId)) {
+  if (!validateMapId(mapIdent)) {
     await sendError(websocket, 'Invalid map ID format')
     return
   }
@@ -231,14 +230,14 @@ async function handlePixelUpdate(websocket, message, env) {
       await websocket.send(
         JSON.stringify({
           Type: 'pixel_update_ack',
-          MapId: mapId,
+          MapIdent: mapIdent,
           SinglePixel: pixelData,
         }),
       )
       return
     }
 
-    const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapId}`)
+    const canvasDataJson = await env.CANVAS_STORAGE.get(`canvas:${mapIdent}`)
     let canvasData = canvasDataJson ? JSON.parse(canvasDataJson) : []
 
     if (pixelData.IsActive) {
@@ -265,18 +264,18 @@ async function handlePixelUpdate(websocket, message, env) {
       )
     }
 
-    await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(canvasData))
+    await env.CANVAS_STORAGE.put(`canvas:${mapIdent}`, JSON.stringify(canvasData))
 
     await websocket.send(
       JSON.stringify({
         Type: 'pixel_update_ack',
-        MapId: mapId,
+        MapIdent: mapIdent,
         SinglePixel: pixelData,
       }),
     )
 
     console.log(
-      `Updated pixel for map ${mapId} at (${pixelData.Position.x}, ${pixelData.Position.y})`,
+      `Updated pixel for map ${mapIdent} at (${pixelData.Position.x}, ${pixelData.Position.y})`,
     )
   } catch (error) {
     console.error('Error updating pixel:', error)
@@ -288,10 +287,10 @@ async function handlePixelUpdate(websocket, message, env) {
  * Handle canvas save operation with validation
  */
 async function handleSaveCanvas(websocket, message, env) {
-  const mapId = message.MapId
+  const mapIdent = message.MapIdent
   const pixelData = message.PixelData
 
-  if (!validateMapId(mapId)) {
+  if (!validateMapId(mapIdent)) {
     await sendError(websocket, 'Invalid map ID format')
     return
   }
@@ -316,24 +315,24 @@ async function handleSaveCanvas(websocket, message, env) {
       await websocket.send(
         JSON.stringify({
           Type: 'save_canvas_ack',
-          MapId: mapId,
+          MapIdent: mapIdent,
           pixelCount: pixelData.length,
         }),
       )
       return
     }
 
-    await env.CANVAS_STORAGE.put(`canvas:${mapId}`, JSON.stringify(pixelData))
+    await env.CANVAS_STORAGE.put(`canvas:${mapIdent}`, JSON.stringify(pixelData))
 
     await websocket.send(
       JSON.stringify({
         Type: 'save_canvas_ack',
-        MapId: mapId,
+        MapIdent: mapIdent,
         pixelCount: pixelData.length,
       }),
     )
 
-    console.log(`Saved canvas for map ${mapId}: ${pixelData.length} pixels`)
+    console.log(`Saved canvas for map ${mapIdent}: ${pixelData.length} pixels`)
   } catch (error) {
     console.error('Error saving canvas:', error)
     await sendError(websocket, 'Failed to save canvas')
@@ -439,13 +438,13 @@ function serveIndexPage() {
     <p>Send JSON messages to the WebSocket endpoint:</p>
     
     <h3>Request Canvas Data</h3>
-    <div class="code">{"Type": "request_canvas_data", "MapId": "your_map_id"}</div>
+    <div class="code">{"Type": "request_canvas_data", "MapIdent": "your_map_id"}</div>
     
     <h3>Update Pixel</h3>
-    <div class="code">{"Type": "pixel_update", "MapId": "your_map_id", "SinglePixel": {...}}</div>
+    <div class="code">{"Type": "pixel_update", "MapIdent": "your_map_id", "SinglePixel": {...}}</div>
     
     <h3>Save Canvas</h3>
-    <div class="code">{"Type": "save_canvas", "MapId": "your_map_id", "PixelData": [...]}</div>
+    <div class="code">{"Type": "save_canvas", "MapIdent": "your_map_id", "PixelData": [...]}</div>
     
     <p><a href="/test">Test the WebSocket connection</a></p>
 </body>
@@ -626,7 +625,7 @@ function serveTestPage() {
                 
                 const requestMessage = {
                     Type: "request_canvas_data",
-                    MapId: testMapId
+                    MapIdent: testMapId
                 };
                 
                 log('Requesting canvas data...', 'info');
@@ -643,12 +642,12 @@ function serveTestPage() {
                     setTimeout(() => {
                         const pixelMessage = {
                             Type: "pixel_update",
-                            MapId: testMapId,
+                            MapIdent: testMapId,
                             SinglePixel: {
                                 Position: { x: 0, y: 0 },
                                 Color: { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
                                 PlacedBy: "test_user",
-                                PlacedAt: new Date().toISOString(),
+                                LastModified: new Date().toISOString(),
                                 IsActive: true
                             }
                         };
@@ -664,13 +663,13 @@ function serveTestPage() {
                     setTimeout(() => {
                         const saveMessage = {
                             Type: "save_canvas",
-                            MapId: testMapId,
+                            MapIdent: testMapId,
                             PixelData: [
                                 {
                                     Position: { x: 0, y: 0 },
                                     Color: { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
                                     PlacedBy: "test_user",
-                                    PlacedAt: new Date().toISOString(),
+                                    LastModified: new Date().toISOString(),
                                     IsActive: true
                                 }
                             ]

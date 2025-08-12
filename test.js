@@ -50,7 +50,7 @@ async function runTests() {
                 Position: { x: 0, y: 0 },
                 Color: { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
                 PlacedBy: 'test_user',
-                PlacedAt: new Date().toISOString(),
+                LastModified: new Date().toISOString(),
                 IsActive: true
               }
             }));
@@ -69,7 +69,7 @@ async function runTests() {
                 Position: { x: 0, y: 0 },
                 Color: { r: 1.0, g: 0.0, b: 0.0, a: 1.0 },
                 PlacedBy: 'test_user',
-                PlacedAt: new Date().toISOString(),
+                LastModified: new Date().toISOString(),
                 IsActive: true
               }]
             }));
